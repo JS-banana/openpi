@@ -19,6 +19,12 @@ import {
   encodeApiKey,
 } from "../../../extensions/ai-providers/antigravity/credentials.ts";
 import { fetchAntigravityModels } from "../../../extensions/ai-providers/antigravity/discovery.ts";
+import {
+  convertMessages,
+  isThinkingPart,
+  mapStopReasonString,
+  retainThoughtSignature,
+} from "../../../extensions/ai-providers/antigravity/google-conversion.ts";
 import { ANTIGRAVITY_MODELS } from "../../../extensions/ai-providers/antigravity/models.ts";
 import {
   loginAntigravity,
@@ -62,6 +68,15 @@ const API_KEY = encodeApiKey({
   projectId: "proj-1",
 });
 
+const ZERO_USAGE = {
+  input: 0,
+  output: 0,
+  cacheRead: 0,
+  cacheWrite: 0,
+  totalTokens: 0,
+  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+};
+
 function sseResponse(events: unknown[]): Response {
   const payload = events
     .map((event) => `data: ${JSON.stringify(event)}\n\n`)
@@ -103,6 +118,175 @@ test("credentials codec round-trips and tolerates bare tokens", () => {
   assert.deepEqual(decodeApiKey(encoded), { token: "a", projectId: "p" });
   assert.deepEqual(decodeApiKey("bare-token"), { token: "bare-token" });
   assert.deepEqual(decodeApiKey("{not json"), { token: "{not json" });
+});
+
+test("local Google conversion preserves only valid same-model signatures", () => {
+  const contents = convertMessages(GEMINI_MODEL, {
+    messages: [
+      {
+        role: "assistant",
+        api: GEMINI_MODEL.api,
+        provider: GEMINI_MODEL.provider,
+        model: GEMINI_MODEL.id,
+        content: [
+          { type: "text", text: "", textSignature: "YWJjZA==" },
+          {
+            type: "thinking",
+            thinking: "reasoning",
+            thinkingSignature: "not-base64",
+          },
+        ],
+        usage: ZERO_USAGE,
+        stopReason: "stop",
+        timestamp: 0,
+      },
+    ],
+  });
+
+  assert.deepEqual(contents, [
+    {
+      role: "model",
+      parts: [
+        { text: "", thoughtSignature: "YWJjZA==" },
+        { thought: true, text: "reasoning" },
+      ],
+    },
+  ]);
+
+  const crossModel = convertMessages(GEMINI_MODEL, {
+    messages: [
+      {
+        role: "assistant",
+        api: GEMINI_MODEL.api,
+        provider: GEMINI_MODEL.provider,
+        model: "another-model",
+        content: [
+          {
+            type: "thinking",
+            thinking: "reasoning",
+            thinkingSignature: "YWJjZA==",
+          },
+          {
+            type: "toolCall",
+            id: "call|with spaces",
+            name: "read_file",
+            arguments: {},
+            thoughtSignature: "YWJjZA==",
+          },
+        ],
+        usage: ZERO_USAGE,
+        stopReason: "toolUse",
+        timestamp: 0,
+      },
+      {
+        role: "toolResult",
+        toolCallId: "call|with spaces",
+        toolName: "read_file",
+        content: [{ type: "text", text: "ok" }],
+        isError: false,
+        timestamp: 0,
+      },
+    ],
+  });
+  assert.deepEqual(crossModel, [
+    {
+      role: "model",
+      parts: [
+        { text: "reasoning" },
+        {
+          functionCall: {
+            id: "call_with_spaces",
+            name: "read_file",
+            args: {},
+          },
+        },
+      ],
+    },
+    {
+      role: "user",
+      parts: [
+        {
+          functionResponse: {
+            id: "call_with_spaces",
+            name: "read_file",
+            response: { output: "ok" },
+          },
+        },
+      ],
+    },
+  ]);
+});
+
+test("local Google conversion repairs orphaned calls and routes tool images", () => {
+  const orphaned = convertMessages(GEMINI_MODEL, {
+    messages: [
+      {
+        role: "assistant",
+        api: GEMINI_MODEL.api,
+        provider: GEMINI_MODEL.provider,
+        model: GEMINI_MODEL.id,
+        content: [
+          { type: "toolCall", id: "call-1", name: "capture", arguments: {} },
+        ],
+        usage: ZERO_USAGE,
+        stopReason: "toolUse",
+        timestamp: 0,
+      },
+      { role: "user", content: "continue", timestamp: 1 },
+    ],
+  });
+  assert.deepEqual(orphaned[1], {
+    role: "user",
+    parts: [
+      {
+        functionResponse: {
+          id: "call-1",
+          name: "capture",
+          response: { error: "No result provided" },
+        },
+      },
+    ],
+  });
+
+  const imageResult = {
+    role: "toolResult" as const,
+    toolCallId: "call-2",
+    toolName: "capture",
+    content: [{ type: "image" as const, mimeType: "image/png", data: "AA==" }],
+    isError: false,
+    timestamp: 0,
+  };
+  const gemini3 = convertMessages(GEMINI_MODEL, { messages: [imageResult] });
+  assert.deepEqual(gemini3[0]?.parts[0]?.functionResponse?.parts, [
+    { inlineData: { mimeType: "image/png", data: "AA==" } },
+  ]);
+
+  const gemini2 = convertMessages(
+    { ...GEMINI_MODEL, id: "gemini-2.5-pro" },
+    { messages: [imageResult] },
+  );
+  assert.equal(gemini2.length, 2);
+  assert.equal(gemini2[0]?.parts[0]?.functionResponse?.parts, undefined);
+  assert.deepEqual(gemini2[1], {
+    role: "user",
+    parts: [
+      { text: "Tool result image:" },
+      { inlineData: { mimeType: "image/png", data: "AA==" } },
+    ],
+  });
+});
+
+test("local Google stream helpers preserve protocol semantics", () => {
+  assert.equal(
+    isThinkingPart({ thought: true, thoughtSignature: "sig" }),
+    true,
+  );
+  assert.equal(isThinkingPart({ thoughtSignature: "sig" }), false);
+  assert.equal(retainThoughtSignature("old", undefined), "old");
+  assert.equal(retainThoughtSignature("old", "new"), "new");
+  assert.equal(mapStopReasonString("STOP"), "stop");
+  assert.equal(mapStopReasonString("MAX_TOKENS"), "length");
+  assert.equal(mapStopReasonString("SAFETY"), "error");
 });
 
 test("OAuth callback ignores a wrong state without consuming the real waiter", async () => {

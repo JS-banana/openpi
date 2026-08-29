@@ -11,7 +11,8 @@
  *
  * SSE frames carry `{ response: GenerateContentResponse }` envelopes. Endpoint
  * failover: daily-cloudcode-pa → daily-cloudcode-pa.sandbox. Message/tool
- * conversion is delegated to pi-ai's google-shared (same Model/Context types).
+ * conversion is kept local because Pi extensions cannot resolve pi-ai's
+ * internal google-shared module at installed runtime.
  */
 
 import { createHash, randomUUID } from "node:crypto";
@@ -25,14 +26,14 @@ import type {
   ToolCall,
 } from "@earendil-works/pi-ai/compat";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai/compat";
+import { decodeApiKey } from "./credentials.ts";
 import {
   convertMessages,
   convertTools,
   isThinkingPart,
   mapStopReasonString,
   retainThoughtSignature,
-} from "@earendil-works/pi-ai/api/google-shared";
-import { decodeApiKey } from "./credentials.ts";
+} from "./google-conversion.ts";
 import { ensureAntigravityVersion, getAntigravityUserAgent } from "./oauth.ts";
 import { routeAntigravityModel } from "./routing.ts";
 
@@ -280,10 +281,7 @@ export function buildRequestBody(
   projectId: string,
   state?: AntigravitySessionState,
 ): Record<string, unknown> {
-  // convertMessages is generic over Google's own api ids; Model is structural,
-  // and the conversion only reads id/provider/reasoning — safe to rebrand.
-  const googleModel = model as Model<"google-generative-ai">;
-  const contents = convertMessages(googleModel, context);
+  const contents = convertMessages(model, context);
 
   const request: Record<string, unknown> = { contents };
   const systemPrompts = normalizeSystemPrompts(context.systemPrompt);
