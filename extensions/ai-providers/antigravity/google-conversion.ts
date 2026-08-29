@@ -394,14 +394,21 @@ export function convertMessages(
   return contents;
 }
 
-function sanitizeForOpenApi(schema: unknown): unknown {
+function sanitizeForOpenApi(
+  schema: unknown,
+  insidePropertiesMap = false,
+): unknown {
   if (typeof schema !== "object" || schema === null || Array.isArray(schema)) {
     return schema;
   }
   const result: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(schema)) {
-    if (!JSON_SCHEMA_META_DECLARATIONS.has(key)) {
+    if (insidePropertiesMap) {
       result[key] = sanitizeForOpenApi(value);
+      continue;
+    }
+    if (!JSON_SCHEMA_META_DECLARATIONS.has(key)) {
+      result[key] = sanitizeForOpenApi(value, key === "properties");
     }
   }
   return result;

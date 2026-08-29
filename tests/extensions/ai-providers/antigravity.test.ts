@@ -400,6 +400,34 @@ test("sanitizeSchemaForCca strips CCA-rejected keywords recursively", () => {
   });
 });
 
+test("sanitizeSchemaForCca preserves property names that match schema keywords", () => {
+  assert.deepEqual(
+    sanitizeSchemaForCca({
+      type: "object",
+      properties: {
+        pattern: {
+          type: "string",
+          description: "Search pattern",
+          pattern: "^[a-z]+$",
+        },
+        format: { type: "string" },
+      },
+      required: ["pattern"],
+    }),
+    {
+      type: "object",
+      properties: {
+        pattern: {
+          type: "string",
+          description: 'Search pattern\n\n{pattern: "^[a-z]+$"}',
+        },
+        format: { type: "string" },
+      },
+      required: ["pattern"],
+    },
+  );
+});
+
 test("buildRequestBody strips CCA-rejected keywords and spills constraints into description", () => {
   const contextWithTools = {
     ...SIMPLE_CONTEXT,
@@ -417,6 +445,8 @@ test("buildRequestBody strips CCA-rejected keywords and spills constraints into 
               uniqueItems: true,
             },
             mode: { type: "string", readOnly: false },
+            pattern: { type: "string", description: "Search pattern" },
+            $id: { type: "string", description: "User-defined property" },
           },
         },
       },
@@ -444,6 +474,14 @@ test("buildRequestBody strips CCA-rejected keywords and spills constraints into 
     items: { type: "string" },
   });
   assert.deepEqual(parameters.properties.mode, { type: "string" });
+  assert.deepEqual(parameters.properties.pattern, {
+    type: "string",
+    description: "Search pattern",
+  });
+  assert.deepEqual(parameters.properties.$id, {
+    type: "string",
+    description: "User-defined property",
+  });
 });
 
 // --- request envelope ------------------------------------------------------

@@ -134,15 +134,24 @@ const CCA_LIFTABLE_TO_DESCRIPTION: Record<string, true> = {
   examples: true,
 };
 
-/** Recursively drop schema keywords Cloud Code Assist rejects. */
-export function sanitizeSchemaForCca(value: unknown): unknown {
+function sanitizeSchemaForCcaValue(
+  value: unknown,
+  insidePropertiesMap: boolean,
+): unknown {
   if (Array.isArray(value)) {
-    return value.map(sanitizeSchemaForCca);
+    return value.map((entry) => sanitizeSchemaForCcaValue(entry, false));
   }
   if (value === null || typeof value !== "object") return value;
   const out: Record<string, unknown> = {};
   const spill: Array<[string, unknown]> = [];
   for (const [key, entry] of Object.entries(value)) {
+    // Keys below `properties` are user-defined parameter names, not JSON
+    // Schema keywords. A tool parameter named `pattern`, for example, must be
+    // preserved while its schema value is sanitized normally.
+    if (insidePropertiesMap) {
+      out[key] = sanitizeSchemaForCcaValue(entry, false);
+      continue;
+    }
     if (Object.hasOwn(CCA_UNSUPPORTED_SCHEMA_FIELDS, key)) {
       if (
         entry !== undefined &&
@@ -152,7 +161,7 @@ export function sanitizeSchemaForCca(value: unknown): unknown {
       }
       continue;
     }
-    out[key] = sanitizeSchemaForCca(entry);
+    out[key] = sanitizeSchemaForCcaValue(entry, key === "properties");
   }
   if (spill.length > 0) {
     const formatted = `{${spill.map(([key, entry]) => `${key}: ${JSON.stringify(entry)}`).join(", ")}}`;
@@ -160,6 +169,11 @@ export function sanitizeSchemaForCca(value: unknown): unknown {
     out.description = existing ? `${existing}\n\n${formatted}` : formatted;
   }
   return out;
+}
+
+/** Recursively drop schema keywords Cloud Code Assist rejects. */
+export function sanitizeSchemaForCca(value: unknown): unknown {
+  return sanitizeSchemaForCcaValue(value, false);
 }
 
 // ---------------------------------------------------------------------------
