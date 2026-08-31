@@ -136,6 +136,30 @@ function throwIfCancelled(signal: AbortSignal | undefined): void {
   }
 }
 
+function withCancellation<T>(
+  promise: Promise<T>,
+  signal: AbortSignal | undefined,
+): Promise<T> {
+  if (!signal) return promise;
+  throwIfCancelled(signal);
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => {
+      reject(new Error("Login cancelled"));
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (error) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(error);
+      },
+    );
+  });
+}
+
 /** fetch with login cancellation + per-request timeout composed. */
 async function oauthFetch(
   url: string,
@@ -267,21 +291,46 @@ async function startCallbackServer(): Promise<CallbackServer> {
     waitForCallback(expectedState, signal) {
       const { promise, resolve, reject } =
         Promise.withResolvers<CallbackResult>();
-      pending.push((result) => {
+      let settled = false;
+      let onAbort: (() => void) | undefined;
+      const pendingCallback = (result: CallbackResult) => {
         if (result.state !== expectedState) {
           return;
         }
-        resolve(result);
-      });
-      failures.push({ expectedState, reject });
-      signal?.addEventListener(
-        "abort",
-        () => reject(new Error("Login cancelled")),
-        { once: true },
-      );
+        settle(() => resolve(result));
+      };
+      const failure = {
+        expectedState,
+        reject(error: Error) {
+          settle(() => reject(error));
+        },
+      };
+      const cleanup = () => {
+        const pendingIndex = pending.indexOf(pendingCallback);
+        if (pendingIndex >= 0) pending.splice(pendingIndex, 1);
+        const failureIndex = failures.indexOf(failure);
+        if (failureIndex >= 0) failures.splice(failureIndex, 1);
+        if (onAbort) signal?.removeEventListener("abort", onAbort);
+      };
+      const settle = (complete: () => void) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        complete();
+      };
+      pending.push(pendingCallback);
+      failures.push(failure);
+      if (signal) {
+        onAbort = () => settle(() => reject(new Error("Login cancelled")));
+        if (signal.aborted) onAbort();
+        else signal.addEventListener("abort", onAbort, { once: true });
+      }
       return promise;
     },
     close() {
+      for (const failure of [...failures]) {
+        failure.reject(new Error("Login callback server closed"));
+      }
       pending.length = 0;
       failures.length = 0;
       server.close();
@@ -504,11 +553,13 @@ export async function loginAntigravity(
   const signal = callbacks.signal;
   throwIfCancelled(signal);
   await ensureAntigravityVersion(signal);
+  throwIfCancelled(signal);
 
   const server = await startCallbackServer();
-  const state = crypto.randomUUID();
-  const redirectUri = `http://127.0.0.1:${server.port}${CALLBACK_PATH}`;
   try {
+    throwIfCancelled(signal);
+    const state = crypto.randomUUID();
+    const redirectUri = `http://127.0.0.1:${server.port}${CALLBACK_PATH}`;
     const authParams = new URLSearchParams({
       client_id: CLIENT_ID,
       response_type: "code",
@@ -532,7 +583,9 @@ export async function loginAntigravity(
       if (onManualCodeInput) {
         const manualPromise = (async () => {
           while (true) {
-            const parsed = parseCallbackInput(await onManualCodeInput());
+            const parsed = parseCallbackInput(
+              await withCancellation(onManualCodeInput(), loginSignal),
+            );
             if (parsed && (!parsed.state || parsed.state === state))
               return parsed;
           }

@@ -46,6 +46,7 @@ const CLAUDE_THINKING_BETA_HEADER = "interleaved-thinking-2025-05-14";
 
 const FLASH_FIRST_EVENT_TIMEOUT_MS = 60_000;
 const DEFAULT_FIRST_EVENT_TIMEOUT_MS = 300_000;
+const MAX_ERROR_BODY_BYTES = 64 * 1024;
 
 type AntigravityStreamOptions = SimpleStreamOptions & {
   /** Added in pi 0.84.3; keep source compatibility with the 0.84.1 peer floor. */
@@ -408,6 +409,71 @@ interface CcaChunk {
   error?: { code?: number; message?: string; status?: string };
 }
 
+async function readErrorResponseBody(
+  body: ReadableStream<Uint8Array> | null,
+  signal: AbortSignal | undefined,
+  deadline: number,
+): Promise<string> {
+  if (!body) return "";
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  const chunks: string[] = [];
+  let bytesRead = 0;
+  let reachedEnd = false;
+  let truncated = false;
+  const timeoutError = () =>
+    new Error("Timed out reading Cloud Code Assist error response body");
+  try {
+    while (bytesRead < MAX_ERROR_BODY_BYTES) {
+      if (signal?.aborted) throw new Error("Request aborted");
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) throw timeoutError();
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      let onAbort: (() => void) | undefined;
+      const gates: Promise<ReadableStreamReadResult<Uint8Array>>[] = [
+        reader.read(),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () => reject(timeoutError()),
+            Math.max(1, remaining),
+          );
+        }),
+      ];
+      if (signal) {
+        gates.push(
+          new Promise<never>((_, reject) => {
+            onAbort = () => reject(new Error("Request aborted"));
+            signal.addEventListener("abort", onAbort, { once: true });
+          }),
+        );
+      }
+      const result = await Promise.race(gates).finally(() => {
+        if (timer) clearTimeout(timer);
+        if (onAbort) signal?.removeEventListener("abort", onAbort);
+      });
+      if (Date.now() >= deadline) throw timeoutError();
+      if (result.done) {
+        reachedEnd = true;
+        break;
+      }
+      const remainingBytes = MAX_ERROR_BODY_BYTES - bytesRead;
+      const value = result.value.subarray(0, remainingBytes);
+      bytesRead += value.byteLength;
+      chunks.push(decoder.decode(value, { stream: true }));
+      if (value.byteLength < result.value.byteLength) {
+        truncated = true;
+        break;
+      }
+      if (bytesRead === MAX_ERROR_BODY_BYTES) truncated = true;
+    }
+    chunks.push(decoder.decode());
+    return chunks.join("") + (truncated ? "… [truncated]" : "");
+  } finally {
+    if (!reachedEnd) await reader.cancel().catch(() => {});
+    reader.releaseLock();
+  }
+}
+
 async function* readSseChunks(
   body: ReadableStream<Uint8Array>,
   signal: AbortSignal | undefined,
@@ -762,7 +828,18 @@ export function streamAntigravity(
           model,
         );
         if (!attempt.ok) {
-          const errorText = await attempt.text();
+          let errorText: string;
+          try {
+            errorText = await readErrorResponseBody(
+              attempt.body,
+              attemptSignal,
+              requestDeadline ?? firstEventDeadline,
+            );
+          } catch (error) {
+            attemptAbort.abort(error);
+            if (requestOptions?.signal?.aborted) throw error;
+            errorText = error instanceof Error ? error.message : String(error);
+          }
           lastError = new Error(
             `Cloud Code Assist API error (${attempt.status}): ${errorText}`,
           );

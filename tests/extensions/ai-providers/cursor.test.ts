@@ -8,7 +8,10 @@ import { createServer as createNetServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, test } from "node:test";
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import {
+  estimateContextTokens,
+  shouldCompact,
+} from "@earendil-works/pi-agent-core";
 import type {
   Api,
   AssistantMessageEvent,
@@ -16,12 +19,13 @@ import type {
   Context,
   Model,
 } from "@earendil-works/pi-ai/compat";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
   fetchCursorModels,
   fetchCursorUsableModels,
 } from "../../../extensions/ai-providers/cursor/discovery.ts";
-import { CURSOR_MODELS } from "../../../extensions/ai-providers/cursor/models.ts";
 import { transformCursorImageInput } from "../../../extensions/ai-providers/cursor/input-images.ts";
+import { CURSOR_MODELS } from "../../../extensions/ai-providers/cursor/models.ts";
 import {
   generateCursorAuthParams,
   getCursorTokenExpiry,
@@ -41,6 +45,7 @@ import {
   ThinkingCompletedUpdateSchema,
   ThinkingDeltaUpdateSchema,
   ThinkingDetailsSchema,
+  TokenDeltaUpdateSchema,
   TurnEndedUpdateSchema,
 } from "../../../extensions/ai-providers/cursor/proto.ts";
 import {
@@ -632,8 +637,97 @@ test("Cursor stream sends required headers and maps Connect text/thinking/done f
   );
 });
 
-test("Cursor request_context succeeds with global rules and empty tools; other exec is thrown", async () => {
+test("Cursor output-only token deltas preserve Pi context estimation and compaction", async () => {
+  const server = await startServer((stream) => {
+    stream.respond({
+      ":status": 200,
+      "content-type": "application/connect+proto",
+    });
+    let requestBytes: Buffer<ArrayBufferLike> = Buffer.alloc(0);
+    stream.on("data", (chunk) => {
+      requestBytes = appendChunk(requestBytes, chunk);
+      if (requestBytes.length < 5) return;
+      const length = requestBytes.readUInt32BE(1);
+      if (requestBytes.length < length + 5) return;
+      const client = fromBinary(
+        AgentClientMessageSchema,
+        requestBytes.subarray(5, length + 5),
+      );
+      requestBytes = requestBytes.subarray(length + 5);
+      if (client.message.case !== "runRequest") return;
+      stream.end(
+        Buffer.concat([
+          responseUpdate(
+            create(InteractionUpdateSchema, {
+              message: {
+                case: "textDelta",
+                value: create(TextDeltaUpdateSchema, { text: "OK" }),
+              },
+            }),
+          ),
+          responseUpdate(
+            create(InteractionUpdateSchema, {
+              message: {
+                case: "tokenDelta",
+                value: create(TokenDeltaUpdateSchema, { tokens: 2 }),
+              },
+            }),
+          ),
+          responseUpdate(
+            create(InteractionUpdateSchema, {
+              message: {
+                case: "turnEnded",
+                value: create(TurnEndedUpdateSchema, {}),
+              },
+            }),
+          ),
+        ]),
+      );
+    });
+  });
+  servers.push(server);
+
+  const user = {
+    role: "user" as const,
+    content: "x".repeat(800_000),
+    timestamp: 0,
+  };
+  const events = await collectEvents(
+    streamCursor(
+      localModel(server.baseUrl),
+      { systemPrompt: "", messages: [user] },
+      { apiKey: "token" },
+    ),
+  );
+  const done = events.at(-1);
+  assert.ok(done?.type === "done");
+  assert.deepEqual(done.message.usage, {
+    input: 0,
+    output: 0,
+    cacheRead: 0,
+    cacheWrite: 0,
+    totalTokens: 0,
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+  });
+
+  const estimate = estimateContextTokens([user, done.message]);
+  assert.equal(estimate.lastUsageIndex, null);
+  assert.ok(estimate.tokens >= 200_000);
+  assert.equal(
+    shouldCompact(estimate.tokens, 200_000, {
+      enabled: true,
+      reserveTokens: 16_384,
+      keepRecentTokens: 20_000,
+    }),
+    true,
+  );
+});
+
+test("Cursor request_context succeeds with global rules and empty tools; other exec is thrown", {
+  timeout: 1_000,
+}, async () => {
   const replies: AgentClientMessage[] = [];
+  const streamCloseReceived = Promise.withResolvers<void>();
   const server = await startServer((stream) => {
     stream.respond({
       ":status": 200,
@@ -684,6 +778,7 @@ test("Cursor request_context succeeds with global rules and empty tools; other e
             client.message.case === "execClientControlMessage" &&
             client.message.value.message.case === "streamClose"
           ) {
+            streamCloseReceived.resolve();
             stream.write(
               responseUpdate(
                 create(InteractionUpdateSchema, {
@@ -705,6 +800,7 @@ test("Cursor request_context succeeds with global rules and empty tools; other e
   const events = await collectEvents(
     streamCursor(localModel(server.baseUrl), CONTEXT, { apiKey: "token" }),
   );
+  await streamCloseReceived.promise;
   const contextReply = replies.find(
     (reply) =>
       reply.message.case === "execClientMessage" &&
@@ -732,6 +828,16 @@ test("Cursor request_context succeeds with global rules and empty tools; other e
   const throwMessage = throwReply.message.value.message;
   assert.ok(throwMessage.case === "throw");
   assert.equal(throwMessage.value.errorCode, "UNIMPLEMENTED");
+  const terminal = events.at(-1);
+  assert.ok(terminal?.type === "error");
+  assert.match(
+    terminal.error.errorMessage ?? "",
+    /unavailable in chat-only mode/,
+  );
+  assert.equal(
+    events.some((event) => event.type === "done"),
+    false,
+  );
   assert.equal(
     events.some((event) => event.type.startsWith("toolcall")),
     false,

@@ -925,6 +925,72 @@ test("streamAntigravity fails over to the sandbox endpoint on 5xx", async () => 
   assert.ok(done && done.type === "done" && done.reason === "stop");
 });
 
+test("streamAntigravity bounds a stalled non-2xx body and fails over", async () => {
+  let requests = 0;
+  const server = http.createServer((_request, response) => {
+    requests++;
+    if (requests === 1) {
+      response.writeHead(503, { "Content-Type": "text/plain" });
+      response.write("partial error");
+      return;
+    }
+    response.writeHead(200, { "Content-Type": "text/event-stream" });
+    response.end(
+      'data: {"response":{"candidates":[{"content":{"parts":[{"text":"fallback"}]},"finishReason":"STOP"}]}}\n\n',
+    );
+  });
+  const listening = Promise.withResolvers<void>();
+  server.once("error", listening.reject);
+  server.listen(0, "127.0.0.1", listening.resolve);
+  await listening.promise;
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  const localUrl = `http://127.0.0.1:${address.port}/stream`;
+  const startedAt = Date.now();
+  let events;
+  try {
+    events = await collectEvents(
+      streamAntigravity(GEMINI_MODEL, SIMPLE_CONTEXT, {
+        apiKey: API_KEY,
+        timeoutMs: 50,
+        fetch: (_input, init) => originalFetch(localUrl, init),
+      }),
+    );
+  } finally {
+    server.closeAllConnections();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+  assert.ok(Date.now() - startedAt < 1_000);
+  assert.equal(requests, 2);
+  const done = events.find((event) => event.type === "done");
+  assert.ok(done && done.type === "done" && done.reason === "stop");
+});
+
+test("streamAntigravity truncates and cancels an oversized error body", async () => {
+  let cancellations = 0;
+  globalThis.fetch = (async () =>
+    new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode("x".repeat(128 * 1024)));
+        },
+        cancel() {
+          cancellations++;
+        },
+      }),
+      { status: 400 },
+    )) as typeof fetch;
+
+  const events = await collectEvents(
+    streamAntigravity(GEMINI_MODEL, SIMPLE_CONTEXT, { apiKey: API_KEY }),
+  );
+  assert.equal(cancellations, 1);
+  const error = events.find((event) => event.type === "error");
+  assert.ok(error && error.type === "error");
+  assert.match(error.error.errorMessage ?? "", /\[truncated\]$/);
+  assert.ok((error.error.errorMessage?.length ?? 0) < 70 * 1024);
+});
+
 test("streamAntigravity fails over after a transient error in a 200 stream", async () => {
   const urls: string[] = [];
   globalThis.fetch = (async (input: unknown) => {

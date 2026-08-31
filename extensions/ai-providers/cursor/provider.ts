@@ -743,9 +743,6 @@ export function streamCursor(
               }),
             },
           });
-          h2Request?.write(
-            frameConnectMessage(toBinary(AgentClientMessageSchema, throwReply)),
-          );
           const closeReply = create(AgentClientMessageSchema, {
             message: {
               case: "execClientControlMessage",
@@ -757,8 +754,20 @@ export function streamCursor(
               }),
             },
           });
-          h2Request?.write(
+          const error = new Error(
+            "Cursor requested a tool that is unavailable in chat-only mode",
+          );
+          terminalError = error;
+          if (!h2Request) {
+            settle(error);
+            return;
+          }
+          h2Request.write(
+            frameConnectMessage(toBinary(AgentClientMessageSchema, throwReply)),
+          );
+          h2Request.write(
             frameConnectMessage(toBinary(AgentClientMessageSchema, closeReply)),
+            () => settle(error),
           );
           return;
         }
@@ -1090,9 +1099,9 @@ function processInteraction(
         `Cursor ${update.message.case} is unavailable in chat-only mode`,
       );
     case "tokenDelta": {
-      const tokens = update.message.value.tokens;
-      output.usage.output += Math.max(0, tokens);
-      output.usage.totalTokens = output.usage.input + output.usage.output;
+      // Cursor only reports generated tokens here, not the complete context
+      // usage Pi needs for compaction. Keep the usage block empty so Pi falls
+      // back to estimating the full message history.
       break;
     }
     case "turnEnded":

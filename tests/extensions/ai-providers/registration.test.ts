@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type {
   Api,
   AssistantMessageEventStream,
@@ -9,9 +8,10 @@ import type {
   OAuthCredentials,
   Provider,
 } from "@earendil-works/pi-ai";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { decodeApiKey } from "../../../extensions/ai-providers/antigravity/credentials.ts";
 import authProviders from "../../../extensions/ai-providers/index.ts";
 import { createOAuthAuth } from "../../../extensions/ai-providers/oauth-adapter.ts";
-import { decodeApiKey } from "../../../extensions/ai-providers/antigravity/credentials.ts";
 
 function loadProviders(): {
   providers: Provider[];
@@ -59,6 +59,67 @@ test("ai-providers registers complete native providers", () => {
       assert.equal(model.provider, provider.id);
       assert.ok(model.api.length > 0);
       assert.ok(model.baseUrl.length > 0);
+    }
+  }
+});
+
+test("Antigravity OAuth cancellation during version discovery stays bounded", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalVersion = process.env.OPENPI_ANTIGRAVITY_VERSION;
+  delete process.env.OPENPI_ANTIGRAVITY_VERSION;
+  const manifestStarted = Promise.withResolvers<void>();
+  const notifications: unknown[] = [];
+  let prompts = 0;
+  try {
+    globalThis.fetch = ((_input, init) => {
+      manifestStarted.resolve();
+      return new Promise<Response>((_resolve, reject) => {
+        const signal = init?.signal;
+        const onAbort = () => reject(signal?.reason ?? new Error("aborted"));
+        if (signal?.aborted) onAbort();
+        else signal?.addEventListener("abort", onAbort, { once: true });
+      });
+    }) as typeof fetch;
+    const { providers } = loadProviders();
+    const provider = providers.find(
+      (entry) => entry.id === "google-antigravity",
+    );
+    const oauth = provider?.auth.oauth;
+    assert.ok(oauth);
+    const controller = new AbortController();
+    const login = oauth.login({
+      signal: controller.signal,
+      notify: (event) => notifications.push(event),
+      prompt: async () => {
+        prompts++;
+        return "";
+      },
+    });
+    await manifestStarted.promise;
+    controller.abort("test cancellation");
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const bounded = Promise.race([
+      login,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error("login cancellation remained pending")),
+          250,
+        );
+      }),
+    ]);
+    try {
+      await assert.rejects(bounded, /cancelled/);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+    assert.deepEqual(notifications, []);
+    assert.equal(prompts, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalVersion === undefined) {
+      delete process.env.OPENPI_ANTIGRAVITY_VERSION;
+    } else {
+      process.env.OPENPI_ANTIGRAVITY_VERSION = originalVersion;
     }
   }
 });
