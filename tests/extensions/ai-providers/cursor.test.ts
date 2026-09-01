@@ -8,18 +8,19 @@ import { createServer as createNetServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, test } from "node:test";
-import {
-  estimateContextTokens,
-  shouldCompact,
-} from "@earendil-works/pi-agent-core";
 import type {
   Api,
+  AssistantMessage,
   AssistantMessageEvent,
   AssistantMessageEventStream,
   Context,
   Model,
 } from "@earendil-works/pi-ai/compat";
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import {
+  AgentSession,
+  type ExtensionContext,
+  VERSION as PI_VERSION,
+} from "@earendil-works/pi-coding-agent";
 import {
   fetchCursorModels,
   fetchCursorUsableModels,
@@ -69,6 +70,19 @@ const CONTEXT: Context = {
   systemPrompt: "Follow the system rule.",
   messages: [{ role: "user", content: "hello", timestamp: 0 }],
 };
+
+function piVersionAtLeast(
+  version: string,
+  minimum: readonly number[],
+): boolean {
+  const current = version.split(".").map((part) => Number.parseInt(part, 10));
+  for (let index = 0; index < minimum.length; index++) {
+    const currentPart = current[index] ?? 0;
+    const minimumPart = minimum[index] ?? 0;
+    if (currentPart !== minimumPart) return currentPart > minimumPart;
+  }
+  return true;
+}
 
 function localModel(baseUrl: string): Model<Api> {
   return { ...MODEL, baseUrl };
@@ -212,6 +226,27 @@ test("Cursor request encodes image content in the selected image protobuf", asyn
   assert.ok(selectedImage?.dataOrBlobId.case === "data");
   assert.deepEqual([...selectedImage.dataOrBlobId.value], [...bytes]);
   assert.equal(selectedImage.mimeType, "image/png");
+});
+
+test("Cursor pins bare Composer 2.5 to the Standard lane", async () => {
+  const standard = await buildCursorRequest(
+    { ...MODEL, id: "composer-2.5" },
+    CONTEXT,
+  );
+  assert.equal(standard.request.requestedModel?.modelId, "composer-2.5");
+  assert.deepEqual(
+    standard.request.requestedModel?.parameters.map(({ id, value }) => ({
+      id,
+      value,
+    })),
+    [{ id: "fast", value: "false" }],
+  );
+
+  const fast = await buildCursorRequest(
+    { ...MODEL, id: "composer-2.5-fast" },
+    CONTEXT,
+  );
+  assert.deepEqual(fast.request.requestedModel?.parameters, []);
 });
 
 test("Cursor interactive input turns an explicit leading image path into ImageContent", async () => {
@@ -382,6 +417,10 @@ test("Cursor discovery aligns Max Mode and uses conservative context fallbacks",
               maxMode: true,
             }),
             create(ModelDetailsSchema, {
+              modelId: "composer-2.5",
+              displayName: "Composer 2.5",
+            }),
+            create(ModelDetailsSchema, {
               modelId: "gemini-3.1-pro",
               displayName: "Gemini 3.1 Pro",
               maxMode: true,
@@ -432,12 +471,15 @@ test("Cursor discovery aligns Max Mode and uses conservative context fallbacks",
   assert.equal(maxClaude?.cursorMaxMode, true);
   assert.equal(maxClaude?.contextWindow, 1_000_000);
   assert.equal(byId.get("cursor-composer-max")?.contextWindow, 200_000);
+  assert.deepEqual(byId.get("composer-2.5")?.input, ["text", "image"]);
   assert.equal(byId.get("gemini-3.1-pro")?.contextWindow, 1_000_000);
   assert.equal(byId.get("gpt-5.6-sol")?.contextWindow, 1_000_000);
   assert.equal(byId.get("claude-fable-5")?.contextWindow, 200_000);
   assert.equal(byId.get("gpt-5.6-terra")?.contextWindow, 200_000);
   assert.equal(byId.get("cursor-grok-4.6-high")?.contextWindow, 200_000);
+  assert.deepEqual(byId.get("cursor-grok-4.6-high")?.input, ["text", "image"]);
   assert.equal(byId.get("moonshotai/kimi-k3")?.contextWindow, 1_000_000);
+  assert.deepEqual(byId.get("moonshotai/kimi-k3")?.input, ["text", "image"]);
   assert.equal(byId.get("z-ai/glm-5.2-turbo")?.contextWindow, 1_000_000);
   assert.equal(byId.get("z-ai/glm-5.2-flash")?.contextWindow, 200_000);
   assert.ok(maxClaude);
@@ -637,7 +679,7 @@ test("Cursor stream sends required headers and maps Connect text/thinking/done f
   );
 });
 
-test("Cursor output-only token deltas preserve Pi context estimation and compaction", async () => {
+test("Cursor output-only token deltas preserve Pi's real compaction boundary", async () => {
   const server = await startServer((stream) => {
     stream.respond({
       ":status": 200,
@@ -710,16 +752,45 @@ test("Cursor output-only token deltas preserve Pi context estimation and compact
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
   });
 
-  const estimate = estimateContextTokens([user, done.message]);
-  assert.equal(estimate.lastUsageIndex, null);
-  assert.ok(estimate.tokens >= 200_000);
-  assert.equal(
-    shouldCompact(estimate.tokens, 200_000, {
-      enabled: true,
-      reserveTokens: 16_384,
-      keepRecentTokens: 20_000,
-    }),
-    true,
+  const compactionCalls: Array<{ reason: string; willRetry: boolean }> = [];
+  const session = {
+    settingsManager: {
+      getCompactionSettings: () => ({
+        enabled: true,
+        reserveTokens: 16_384,
+        keepRecentTokens: 20_000,
+      }),
+    },
+    model: { ...MODEL, contextWindow: 200_000 },
+    sessionManager: { getBranch: () => [] },
+    agent: { state: { messages: [user, done.message] } },
+    _overflowRecoveryAttempted: false,
+    _emit: () => {},
+    _runAutoCompaction: async (reason: string, willRetry: boolean) => {
+      compactionCalls.push({ reason, willRetry });
+      return true;
+    },
+  };
+  const checkCompaction = (
+    AgentSession.prototype as unknown as {
+      _checkCompaction: (
+        this: unknown,
+        message: AssistantMessage,
+      ) => Promise<boolean>;
+    }
+  )._checkCompaction;
+  const compacted = await checkCompaction.call(session, done.message);
+  const hostSupportsZeroUsageCompaction = piVersionAtLeast(
+    PI_VERSION,
+    [0, 84, 3],
+  );
+
+  assert.equal(compacted, hostSupportsZeroUsageCompaction);
+  assert.deepEqual(
+    compactionCalls,
+    hostSupportsZeroUsageCompaction
+      ? [{ reason: "threshold", willRetry: false }]
+      : [],
   );
 });
 

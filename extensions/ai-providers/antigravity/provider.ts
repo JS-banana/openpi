@@ -48,8 +48,8 @@ const FLASH_FIRST_EVENT_TIMEOUT_MS = 60_000;
 const DEFAULT_FIRST_EVENT_TIMEOUT_MS = 300_000;
 const MAX_ERROR_BODY_BYTES = 64 * 1024;
 
-type AntigravityStreamOptions = SimpleStreamOptions & {
-  /** Added in pi 0.84.3; keep source compatibility with the 0.84.1 peer floor. */
+type AntigravityStreamOptions = Omit<SimpleStreamOptions, "toolChoice"> & {
+  /** Keep Antigravity's richer modes compatible across Pi 0.84.1 and 0.84.3+. */
   toolChoice?:
     | "auto"
     | "none"

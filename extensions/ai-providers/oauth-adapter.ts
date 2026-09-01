@@ -10,7 +10,7 @@ import type {
 interface LegacyOAuthImplementation {
   name: string;
   isSubscription?: boolean;
-  login(callbacks: OAuthLoginCallbacks): Promise<OAuthCredentials>;
+  login(callbacks: CancellableOAuthLoginCallbacks): Promise<OAuthCredentials>;
   refreshToken(
     credential: OAuthCredentials,
     signal: AbortSignal,
@@ -18,9 +18,16 @@ interface LegacyOAuthImplementation {
   getApiKey(credential: OAuthCredentials): string | Promise<string>;
 }
 
+export type CancellableOAuthLoginCallbacks = Omit<
+  OAuthLoginCallbacks,
+  "onManualCodeInput"
+> & {
+  onManualCodeInput?(signal?: AbortSignal): Promise<string>;
+};
+
 function legacyCallbacks(
   interaction: ProviderAuthInteraction,
-): OAuthLoginCallbacks {
+): CancellableOAuthLoginCallbacks {
   return {
     signal: interaction.signal,
     onAuth: (info) => interaction.notify({ type: "auth_url", ...info }),
@@ -33,10 +40,11 @@ function legacyCallbacks(
         message: prompt.message,
         placeholder: prompt.placeholder,
       }),
-    onManualCodeInput: () =>
+    onManualCodeInput: (signal) =>
       interaction.prompt({
         type: "manual_code",
         message: "Paste the authorization callback URL or code",
+        signal,
       }),
     onSelect: (prompt) =>
       interaction.prompt({

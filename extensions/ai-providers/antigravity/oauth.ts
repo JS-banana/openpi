@@ -16,10 +16,8 @@
 
 import * as http from "node:http";
 import type { AddressInfo } from "node:net";
-import type {
-  OAuthCredentials,
-  OAuthLoginCallbacks,
-} from "@earendil-works/pi-ai/compat";
+import type { OAuthCredentials } from "@earendil-works/pi-ai/compat";
+import type { CancellableOAuthLoginCallbacks } from "../oauth-adapter.ts";
 import type { AntigravityCredentials } from "./credentials.ts";
 
 // Public OAuth client identity of the Antigravity IDE (also used by omp and
@@ -548,7 +546,7 @@ async function fetchUserEmail(
 // ---------------------------------------------------------------------------
 
 export async function loginAntigravity(
-  callbacks: OAuthLoginCallbacks,
+  callbacks: CancellableOAuthLoginCallbacks,
 ): Promise<OAuthCredentials> {
   const signal = callbacks.signal;
   throwIfCancelled(signal);
@@ -576,15 +574,17 @@ export async function loginAntigravity(
 
     const timeout = AbortSignal.timeout(LOGIN_TIMEOUT_MS);
     const loginSignal = signal ? AbortSignal.any([signal, timeout]) : timeout;
+    const raceController = new AbortController();
+    const raceSignal = AbortSignal.any([loginSignal, raceController.signal]);
     let callback: CallbackResult;
     try {
-      const callbackPromise = server.waitForCallback(state, loginSignal);
+      const callbackPromise = server.waitForCallback(state, raceSignal);
       const onManualCodeInput = callbacks.onManualCodeInput;
       if (onManualCodeInput) {
         const manualPromise = (async () => {
           while (true) {
             const parsed = parseCallbackInput(
-              await withCancellation(onManualCodeInput(), loginSignal),
+              await withCancellation(onManualCodeInput(raceSignal), raceSignal),
             );
             if (parsed && (!parsed.state || parsed.state === state))
               return parsed;
@@ -599,6 +599,10 @@ export async function loginAntigravity(
         throw new Error("Login timed out waiting for the browser callback");
       }
       throw error;
+    } finally {
+      // The callback and manual prompt are alternatives. Cancel the loser as
+      // soon as either one supplies a valid authorization code.
+      raceController.abort();
     }
 
     callbacks.onProgress?.("Exchanging authorization code for tokens...");

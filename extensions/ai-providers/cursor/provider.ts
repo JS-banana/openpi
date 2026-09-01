@@ -378,6 +378,19 @@ function resolveWireModel(model: Model<Api>): {
   parameters: RequestedModel_ModelParameterbytes[];
 } {
   const id = model.id;
+  // Cursor resolves the bare Composer 2.5 id to its Fast lane unless the
+  // Standard tier is requested explicitly.
+  if (id === "composer-2.5") {
+    return {
+      modelId: id,
+      parameters: [
+        create(RequestedModel_ModelParameterbytesSchema, {
+          id: "fast",
+          value: "false",
+        }),
+      ],
+    };
+  }
   const match = /^(.*)-(minimal|low|medium|high|xhigh|max)(-fast)?$/.exec(id);
   if (!match?.[1] || !/(?:gpt|codex|o\d)/i.test(match[1])) {
     return { modelId: id, parameters: [] };
@@ -1100,8 +1113,8 @@ function processInteraction(
       );
     case "tokenDelta": {
       // Cursor only reports generated tokens here, not the complete context
-      // usage Pi needs for compaction. Keep the usage block empty so Pi falls
-      // back to estimating the full message history.
+      // usage Pi needs for context accounting. Keep the usage block empty;
+      // Pi 0.84.3+ estimates the full history for threshold compaction.
       break;
     }
     case "turnEnded":

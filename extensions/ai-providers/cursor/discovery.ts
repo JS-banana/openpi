@@ -161,8 +161,7 @@ function normalizeCursorModel(
     ]
       .map((value) => value.trim())
       .find(Boolean) ?? id;
-  const lower = id.toLowerCase();
-  const multimodal = /claude|gemini|gpt-|codex/.test(lower);
+  const multimodal = supportsCursorImages(id);
   return {
     id,
     name,
@@ -176,6 +175,18 @@ function normalizeCursorModel(
     maxTokens: DEFAULT_MAX_TOKENS,
     ...(details.maxMode ? { cursorMaxMode: true } : {}),
   };
+}
+
+/** GetUsableModels omits modality metadata for Cursor-native image families. */
+function supportsCursorImages(id: string): boolean {
+  const lower = id.toLowerCase();
+  if (/claude|gemini|gpt-|codex/.test(lower)) return true;
+  const bareId = lower.split("/").at(-1) ?? lower;
+  return (
+    /^(?:kimi-)?k3(?:$|[._:-])/.test(bareId) ||
+    /^cursor-grok-4(?:$|[._:-])/.test(bareId) ||
+    /^(?:cursor-)?composer-2\.5(?:$|[._:-])/.test(bareId)
+  );
 }
 
 function buildHeaders(

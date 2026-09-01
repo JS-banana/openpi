@@ -273,6 +273,8 @@ test("OAuth adapter preserves events, prompts, credentials, and request auth", a
   const notifications: unknown[] = [];
   const promptTypes: string[] = [];
   let refreshSignal: AbortSignal | undefined;
+  let requestedManualSignal: AbortSignal | undefined;
+  let receivedManualSignal: AbortSignal | undefined;
   const oauth = createOAuthAuth({
     name: "Test OAuth",
     isSubscription: true,
@@ -282,7 +284,8 @@ test("OAuth adapter preserves events, prompts, credentials, and request auth", a
         instructions: "Sign in",
       });
       callbacks.onProgress?.("Waiting");
-      const code = await callbacks.onManualCodeInput?.();
+      requestedManualSignal = new AbortController().signal;
+      const code = await callbacks.onManualCodeInput?.(requestedManualSignal);
       const choice = await callbacks.onSelect({
         message: "Account",
         options: [{ id: "one", label: "One" }],
@@ -306,6 +309,9 @@ test("OAuth adapter preserves events, prompts, credentials, and request auth", a
     notify: (event) => notifications.push(event),
     prompt: async (prompt) => {
       promptTypes.push(prompt.type);
+      if (prompt.type === "manual_code") {
+        receivedManualSignal = prompt.signal;
+      }
       return prompt.type === "select" ? "one" : "manual-code";
     },
   });
@@ -316,6 +322,7 @@ test("OAuth adapter preserves events, prompts, credentials, and request auth", a
     ["auth_url", "progress"],
   );
   assert.deepEqual(promptTypes, ["manual_code", "select"]);
+  assert.equal(receivedManualSignal, requestedManualSignal);
 
   const refreshed = await oauth.refresh(credential, signal);
   assert.equal(refreshSignal, signal);

@@ -38,6 +38,13 @@ before the request is sent. The absolute path is not exposed to the model.
 The provider also adds an explicit chat-only rule so the normal Pi coding
 system prompt cannot cause Cursor to attempt unavailable read or shell tools.
 
+Cursor's token delta describes generated output only, so the provider does not
+publish it as complete context usage. Pi 0.84.3+ can estimate an all-Cursor
+history and trigger threshold compaction without provider usage. Older Pi hosts
+retain the correct unknown-usage state but cannot automatically threshold-
+compact a session with no usage-backed response. Project-wide Pi baseline
+tracking is kept in [#328](https://github.com/openpi-dev/openpi/issues/328).
+
 Cursor model discovery and chat use HTTP/2. They honor `PI_PROXY_CURSOR`, then
 `PI_PROXY`, the standard `HTTPS_PROXY`/`HTTP_PROXY` variables, and `ALL_PROXY`;
 `NO_PROXY` bypass rules apply. The proxy must support HTTP CONNECT and preserve

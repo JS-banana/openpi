@@ -312,6 +312,7 @@ test("OAuth callback ignores a wrong state without consuming the real waiter", a
   }) as typeof fetch;
 
   const authReady = Promise.withResolvers<string>();
+  const manualReady = Promise.withResolvers<AbortSignal>();
   const login = loginAntigravity({
     onAuth(info) {
       authReady.resolve(info.url);
@@ -323,22 +324,35 @@ test("OAuth callback ignores a wrong state without consuming the real waiter", a
     async onSelect() {
       return undefined;
     },
+    onManualCodeInput(signal) {
+      assert.ok(signal);
+      manualReady.resolve(signal);
+      return new Promise<string>((_resolve, reject) => {
+        const onAbort = () => reject(new Error("manual prompt cancelled"));
+        if (signal.aborted) onAbort();
+        else signal.addEventListener("abort", onAbort, { once: true });
+      });
+    },
   });
   const authUrl = new URL(await authReady.promise);
+  const manualSignal = await manualReady.promise;
   const state = authUrl.searchParams.get("state");
   const redirect = authUrl.searchParams.get("redirect_uri");
   assert.ok(state && redirect);
+  assert.equal(manualSignal.aborted, false);
 
   const wrong = new URL(redirect);
   wrong.searchParams.set("code", "wrong-code");
   wrong.searchParams.set("state", "wrong-state");
   assert.equal(await getStatus(wrong), 400);
+  assert.equal(manualSignal.aborted, false);
 
   const valid = new URL(redirect);
   valid.searchParams.set("code", "valid-code");
   valid.searchParams.set("state", state);
   assert.equal(await getStatus(valid), 200);
   const credentials = await login;
+  assert.equal(manualSignal.aborted, true);
   assert.equal(credentials.access, "access");
   assert.equal(credentials.refresh, "refresh");
   assert.equal(credentials.projectId, "project");
