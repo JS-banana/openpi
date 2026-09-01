@@ -35,6 +35,10 @@ const HOST_PACKAGES = [
   "typebox",
 ] as const;
 
+const PI_HOST_PACKAGES = HOST_PACKAGES.filter((packageName) =>
+  packageName.startsWith("@earendil-works/pi-"),
+);
+
 test("Pi host packages stay peers while local checks keep development copies", () => {
   for (const packageName of HOST_PACKAGES) {
     assert.equal(manifest.peerDependencies?.[packageName], "*");
@@ -45,6 +49,12 @@ test("Pi host packages stay peers while local checks keep development copies", (
 
 test("the manifest enforces the documented Node floor", () => {
   assert.equal(manifest.engines?.node, ">=22.19.0");
+});
+
+test("Pi development packages enforce the documented compatibility floor", () => {
+  for (const packageName of PI_HOST_PACKAGES) {
+    assert.equal(manifest.devDependencies?.[packageName], "^0.84.3");
+  }
 });
 
 test("pi-intercom stays an explicit opt-in instead of a bundled dependency", () => {
