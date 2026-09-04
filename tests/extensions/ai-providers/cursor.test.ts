@@ -71,6 +71,34 @@ const CONTEXT: Context = {
   messages: [{ role: "user", content: "hello", timestamp: 0 }],
 };
 
+const CURSOR_PROXY_VARIABLES = [
+  "PI_PROXY_CURSOR",
+  "PI_PROXY",
+  "HTTPS_PROXY",
+  "https_proxy",
+  "HTTP_PROXY",
+  "http_proxy",
+  "ALL_PROXY",
+  "all_proxy",
+  "NO_PROXY",
+  "no_proxy",
+] as const;
+
+async function withCleanProxyEnvironment<T>(run: () => Promise<T>): Promise<T> {
+  const originalEnvironment = new Map(
+    CURSOR_PROXY_VARIABLES.map((name) => [name, process.env[name]]),
+  );
+  try {
+    for (const name of CURSOR_PROXY_VARIABLES) delete process.env[name];
+    return await run();
+  } finally {
+    for (const [name, value] of originalEnvironment) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  }
+}
+
 function piVersionAtLeast(
   version: string,
   minimum: readonly number[],
@@ -489,31 +517,9 @@ test("Cursor discovery aligns Max Mode and uses conservative context fallbacks",
 });
 
 test("Cursor discovery and chat HTTP/2 transports honor configured proxies", async () => {
-  const proxyVariables = [
-    "PI_PROXY_CURSOR",
-    "PI_PROXY",
-    "HTTPS_PROXY",
-    "https_proxy",
-    "HTTP_PROXY",
-    "http_proxy",
-    "ALL_PROXY",
-    "all_proxy",
-    "NO_PROXY",
-    "no_proxy",
-  ] as const;
-  const originalEnvironment = new Map(
-    proxyVariables.map((name) => [name, process.env[name]]),
-  );
-  const restoreEnvironment = () => {
-    for (const [name, value] of originalEnvironment) {
-      if (value === undefined) delete process.env[name];
-      else process.env[name] = value;
-    }
-  };
-
-  try {
+  await withCleanProxyEnvironment(async () => {
     for (const variable of ["HTTPS_PROXY", "PI_PROXY_CURSOR"] as const) {
-      for (const name of proxyVariables) delete process.env[name];
+      for (const name of CURSOR_PROXY_VARIABLES) delete process.env[name];
       const connectTargets: string[] = [];
       const proxy = createNetServer((socket) => {
         socket.once("data", (chunk) => {
@@ -552,9 +558,75 @@ test("Cursor discovery and chat HTTP/2 transports honor configured proxies", asy
         await once(proxy, "close").catch(() => undefined);
       }
     }
-  } finally {
-    restoreEnvironment();
-  }
+  });
+});
+
+test("Cursor rejects malformed proxy credentials before opening a tunnel", async () => {
+  await withCleanProxyEnvironment(async () => {
+    let connections = 0;
+    const proxy = createNetServer(() => {
+      connections += 1;
+    });
+    proxy.listen(0, "127.0.0.1");
+    await once(proxy, "listening");
+    const address = proxy.address();
+    assert.ok(address && typeof address === "object");
+    process.env.PI_PROXY_CURSOR = `http://user%ZZ:pass@127.0.0.1:${address.port}`;
+
+    try {
+      const events = await collectEvents(
+        streamCursor(localModel("https://198.51.100.7:8443"), CONTEXT, {
+          apiKey: "token",
+        }),
+      );
+      const error = events.at(-1);
+      assert.ok(error?.type === "error");
+      assert.match(
+        error.error.errorMessage ?? "",
+        /proxy credentials contain invalid percent-encoding/,
+      );
+      assert.equal(connections, 0);
+    } finally {
+      proxy.close();
+      await once(proxy, "close").catch(() => undefined);
+    }
+  });
+});
+
+test("Cursor request timeout bounds a hanging proxy CONNECT", {
+  timeout: 1_000,
+}, async () => {
+  await withCleanProxyEnvironment(async () => {
+    const proxy = createNetServer((socket) => {
+      socket.on("data", () => undefined);
+    });
+    proxy.listen(0, "127.0.0.1");
+    await once(proxy, "listening");
+    const address = proxy.address();
+    assert.ok(address && typeof address === "object");
+    process.env.PI_PROXY_CURSOR = `http://127.0.0.1:${address.port}`;
+
+    try {
+      const startedAt = Date.now();
+      const events = await collectEvents(
+        streamCursor(localModel("https://198.51.100.7:8443"), CONTEXT, {
+          apiKey: "token",
+          timeoutMs: 20,
+        }),
+      );
+      const elapsedMs = Date.now() - startedAt;
+      const error = events.at(-1);
+      assert.ok(error?.type === "error");
+      assert.match(
+        error.error.errorMessage ?? "",
+        /proxy tunnel timed out after 20ms/,
+      );
+      assert.ok(elapsedMs < 250, `request took ${elapsedMs}ms`);
+    } finally {
+      proxy.close();
+      await once(proxy, "close").catch(() => undefined);
+    }
+  });
 });
 
 test("Cursor stream sends required headers and maps Connect text/thinking/done frames", async () => {
@@ -675,6 +747,40 @@ test("Cursor stream sends required headers and maps Connect text/thinking/done f
   ]);
   assert.equal(
     events.some((event) => event.type.startsWith("toolcall")),
+    false,
+  );
+});
+
+test("Cursor routes malformed gRPC trailer encoding to a stream error", async () => {
+  const server = await startServer((stream) => {
+    stream.respond(
+      {
+        ":status": 200,
+        "content-type": "application/connect+proto",
+      },
+      { waitForTrailers: true },
+    );
+    stream.once("wantTrailers", () => {
+      stream.sendTrailers({
+        "grpc-status": "13",
+        "grpc-message": "bad%ZZ",
+      });
+    });
+    stream.once("data", () => stream.end());
+  });
+  servers.push(server);
+
+  const events = await collectEvents(
+    streamCursor(localModel(server.baseUrl), CONTEXT, { apiKey: "token" }),
+  );
+  const error = events.at(-1);
+  assert.ok(error?.type === "error");
+  assert.match(
+    error.error.errorMessage ?? "",
+    /gRPC error 13 contains a malformed grpc-message trailer/,
+  );
+  assert.equal(
+    events.some((event) => event.type === "done"),
     false,
   );
 });

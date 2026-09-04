@@ -91,6 +91,19 @@ function connectProxyTunnel(
     targetUrl.port || (targetUrl.protocol === "https:" ? 443 : 80),
   );
   const targetAuthority = `${targetUrl.hostname}:${targetPort}`;
+  let proxyAuthorization: string | undefined;
+  if (proxyUrl.username || proxyUrl.password) {
+    try {
+      const credentials = `${decodeURIComponent(proxyUrl.username)}:${decodeURIComponent(proxyUrl.password)}`;
+      proxyAuthorization = Buffer.from(credentials).toString("base64");
+    } catch (cause) {
+      return Promise.reject(
+        new Error("Cursor proxy credentials contain invalid percent-encoding", {
+          cause,
+        }),
+      );
+    }
+  }
   const { promise, resolve, reject } = Promise.withResolvers<net.Socket>();
   let rawSocket: net.Socket | undefined;
   let targetSocket: net.Socket | undefined;
@@ -163,11 +176,8 @@ function connectProxyTunnel(
   const onReady = () => {
     if (!rawSocket) return;
     let request = `CONNECT ${targetAuthority} HTTP/1.1\r\nHost: ${targetAuthority}\r\n`;
-    if (proxyUrl.username || proxyUrl.password) {
-      const credentials = Buffer.from(
-        `${decodeURIComponent(proxyUrl.username)}:${decodeURIComponent(proxyUrl.password)}`,
-      ).toString("base64");
-      request += `Proxy-Authorization: Basic ${credentials}\r\n`;
+    if (proxyAuthorization) {
+      request += `Proxy-Authorization: Basic ${proxyAuthorization}\r\n`;
     }
     rawSocket.on("data", onData);
     rawSocket.write(`${request}\r\n`);

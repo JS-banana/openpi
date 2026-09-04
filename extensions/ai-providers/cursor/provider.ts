@@ -654,6 +654,10 @@ export function streamCursor(
       ) {
         throw new Error(`Invalid timeoutMs: ${String(timeoutMs)}`);
       }
+      const requestTimeoutMs =
+        timeoutMs === undefined || timeoutMs === 0
+          ? undefined
+          : Math.max(1, Math.floor(timeoutMs));
       const built = await buildCursorRequest(model, context, options);
       const baseUrl = model.baseUrl || CURSOR_API_URL;
       const completion = Promise.withResolvers<void>();
@@ -692,15 +696,15 @@ export function streamCursor(
       };
       const armIdleTimer = () => {
         clearIdleTimer();
-        if (timeoutMs === undefined || timeoutMs === 0) return;
+        if (requestTimeoutMs === undefined) return;
         idleTimer = setTimeout(() => {
           const error = new Error(
-            `Cursor request idle timeout after ${Math.floor(timeoutMs)}ms`,
+            `Cursor request idle timeout after ${requestTimeoutMs}ms`,
           );
           rejectResponseReady(error);
           settle(error);
           h2Request?.close(http2.constants.NGHTTP2_CANCEL);
-        }, Math.floor(timeoutMs));
+        }, requestTimeoutMs);
       };
       let frameBuffer: Buffer<ArrayBufferLike> = Buffer.alloc(0);
       const processFrame = (flags: number, bytes: Uint8Array) => {
@@ -840,7 +844,10 @@ export function streamCursor(
 
       h2Client = await connectCursorHttp2(baseUrl, {
         signal: options?.signal,
-        timeoutMs: PROXY_TUNNEL_TIMEOUT_MS,
+        timeoutMs: Math.min(
+          requestTimeoutMs ?? PROXY_TUNNEL_TIMEOUT_MS,
+          PROXY_TUNNEL_TIMEOUT_MS,
+        ),
       });
       h2Client.once("error", (error) => {
         rejectResponseReady(error);
@@ -857,9 +864,19 @@ export function streamCursor(
       h2Request.on("trailers", (trailers) => {
         const status = String(trailers["grpc-status"] ?? "0");
         if (status !== "0") {
-          terminalError = new Error(
-            `Cursor gRPC error ${status}: ${decodeURIComponent(String(trailers["grpc-message"] ?? ""))}`,
-          );
+          const encodedMessage = String(trailers["grpc-message"] ?? "");
+          try {
+            terminalError = new Error(
+              `Cursor gRPC error ${status}: ${decodeURIComponent(encodedMessage)}`,
+            );
+          } catch (cause) {
+            const error = new Error(
+              `Cursor gRPC error ${status} contains a malformed grpc-message trailer`,
+              { cause },
+            );
+            terminalError = error;
+            settle(error);
+          }
         }
       });
       const responseCallback = responseReady.promise.then(async () => {
