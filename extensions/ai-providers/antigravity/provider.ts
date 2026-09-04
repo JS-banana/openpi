@@ -26,6 +26,7 @@ import type {
   ToolCall,
 } from "@earendil-works/pi-ai/compat";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai/compat";
+import { emptyUsage } from "../usage.ts";
 import { decodeApiKey } from "./credentials.ts";
 import {
   convertMessages,
@@ -659,17 +660,6 @@ function mergeRequestHeaders(
 // ---------------------------------------------------------------------------
 // Stream entry point
 // ---------------------------------------------------------------------------
-
-function emptyUsage(): AssistantMessage["usage"] {
-  return {
-    input: 0,
-    output: 0,
-    cacheRead: 0,
-    cacheWrite: 0,
-    totalTokens: 0,
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-  };
-}
 
 let toolCallCounter = 0;
 

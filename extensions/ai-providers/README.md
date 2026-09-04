@@ -18,11 +18,19 @@ select a model:
 /model
 ```
 
-For source-checkout testing without changing the installed OpenPI package, load
-this extension explicitly:
+For source-checkout testing, follow the repository's
+[development runtime provenance procedure](../../README.md#开发运行时区分-npm-与当前源码).
+Remove any previously installed OpenPI source, install the checkout, and verify
+that `pi list` reports this checkout as the only OpenPI source before reloading
+Pi. Do not mix an installed OpenPI package with an explicitly loaded checkout
+extension, because that does not prove which source owns the runtime behavior.
 
 ```sh
-pi --approve -e ./extensions/ai-providers/index.ts
+pi list
+OLD_OPENPI_SOURCE=/absolute/path/to/old/openpi
+pi remove "$OLD_OPENPI_SOURCE"
+pi install "$PWD"
+pi list
 ```
 
 The model catalog is refreshed from the authenticated account and persisted by

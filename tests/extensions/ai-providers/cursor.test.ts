@@ -84,7 +84,7 @@ const CURSOR_PROXY_VARIABLES = [
   "no_proxy",
 ] as const;
 
-async function withCleanProxyEnvironment<T>(run: () => Promise<T>): Promise<T> {
+async function withCleanProxyEnvironment<T>(run: () => Promise<T>) {
   const originalEnvironment = new Map(
     CURSOR_PROXY_VARIABLES.map((name) => [name, process.env[name]]),
   );
