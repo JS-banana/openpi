@@ -5,7 +5,7 @@ last-reviewed: 2026-10-09
 applies-to: OpenPI Pi compatibility checks from adoption of this change forward
 owner: OpenPI maintainers
 related-issues: "#328"
-related-prs: none
+related-prs: "#719"
 supersedes: none
 ---
 
@@ -31,7 +31,7 @@ allowed by the peers. Historical compatibility evidence is retained in the
 
 ## Decision
 
-Proposed for maintainer adoption with this change:
+Proposed for maintainer adoption with [#719](https://github.com/openpi-dev/openpi/pull/719):
 
 - Keep Pi packages host-owned peers. Preserve the current open-ended peer range;
   do not bundle a second Pi runtime or add an OpenPI runtime version-rejection gate.
