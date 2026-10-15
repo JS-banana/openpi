@@ -60,7 +60,7 @@ for (const outcome of ["success", "install-failure", "assertion-failure"]) {
             }
             if (args[0] === "install") {
               const pinned = JSON.parse(
-                readFileSync(join(root, "package.json")),
+                readFileSync(join(root, "package.json"), "utf8"),
               );
               for (const name of PI_FAMILY) {
                 assert.equal(pinned.devDependencies[name], "1.3.0");

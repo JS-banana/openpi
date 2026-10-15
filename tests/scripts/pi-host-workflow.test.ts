@@ -50,15 +50,19 @@ test("aggregate rejects a failed, cancelled, or skipped endpoint matrix", {
   assert.ok(gate.needs.includes("test-node"));
   const command = gate.steps[0].run;
   for (const result of ["success", "failure", "cancelled", "skipped"]) {
-    const probe = spawnSync("bash", ["-c", command], {
-      env: {
-        ...process.env,
-        NODE_RESULT: result,
-        UI_RESULT: "success",
-        WINDOWS_RESULT: "success",
-        E2E_RESULT: "success",
+    const probe = spawnSync(
+      "bash",
+      ["--noprofile", "--norc", "-e", "-c", command],
+      {
+        env: {
+          ...process.env,
+          NODE_RESULT: result,
+          UI_RESULT: "success",
+          WINDOWS_RESULT: "success",
+          E2E_RESULT: "success",
+        },
       },
-    });
+    );
     assert.equal(probe.status === 0, result === "success", result);
   }
 });
