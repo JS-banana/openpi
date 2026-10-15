@@ -41,7 +41,7 @@ export function assertStableAtLeast(version, floor) {
 
 export function verifyInstalledHost(root, version, listing) {
   const installed = [
-    ...listing.matchAll(/(@earendil-works\/pi-[\w-]+)@(\d+\.\d+\.\d+)/g),
+    ...listing.matchAll(/(@earendil-works\/pi-[\w-]+)@([^\s]+)/g),
   ];
   for (const name of PI_FAMILY) {
     assert.ok(

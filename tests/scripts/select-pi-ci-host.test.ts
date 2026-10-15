@@ -130,3 +130,44 @@ test("missing family and mismatched physical installed identity fail closed", ()
     rmSync(root, { recursive: true, force: true });
   }
 });
+for (const extraVersion of [
+  "1.3.0-beta.1",
+  "1.3.0+build.7",
+  "1.3.0-rc.2+sha.abc",
+  "1.3.0unexpected",
+  "npm:1.3.0",
+]) {
+  test(`additional Pi listing entry preserves the complete ${extraVersion} token`, () => {
+    const { root } = fixture();
+    try {
+      const listing = install(root, "1.3.0");
+      assert.throws(
+        () =>
+          verifyInstalledHost(
+            root,
+            "1.3.0",
+            `${listing}\n└── @earendil-works/pi-mcp@${extraVersion}`,
+          ),
+        /Mixed Pi host/,
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+}
+test("listing equality retains a complete prerelease/build token rather than truncating it", () => {
+  const { root } = fixture();
+  try {
+    const version = "1.3.0-beta.1+build.7";
+    const listing = install(root, version);
+    assert.doesNotThrow(() =>
+      verifyInstalledHost(
+        root,
+        version,
+        `${listing}\n└── @earendil-works/pi-mcp@${version}`,
+      ),
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
