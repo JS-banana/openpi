@@ -170,6 +170,8 @@ function renderCollapsed(
     toolCallId: "call-1",
     invalidate() {},
     lastComponent: undefined,
+    durationMs: undefined,
+    outputPad: 0,
     state,
     cwd,
     executionStarted: true,
@@ -178,8 +180,6 @@ function renderCollapsed(
     expanded: false,
     showImages: false,
     isError,
-    durationMs: undefined,
-    outputPad: 1,
   };
   const call = definition.renderCall?.(args, renderTheme, context);
   assert.ok(call);
@@ -412,6 +412,8 @@ test("expanded mode delegates call and result to Pi native renderers", () => {
       toolCallId: "call-expanded",
       invalidate() {},
       lastComponent: undefined,
+      durationMs: undefined,
+      outputPad: 0,
       state,
       cwd,
       executionStarted: true,
@@ -420,8 +422,6 @@ test("expanded mode delegates call and result to Pi native renderers", () => {
       expanded: true,
       showImages: false,
       isError: false,
-      durationMs: undefined,
-      outputPad: 1,
     };
     const expectedCall = native.renderCall
       ? native.renderCall(fixture.args, theme, context).render(100)

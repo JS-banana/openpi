@@ -11,10 +11,6 @@ import type {
   AgentSessionEventListener,
 } from "@earendil-works/pi-coding-agent";
 
-type HarnessAgentSessionEvent =
-  | Exclude<AgentSessionEvent, { type: "agent_settled" }>
-  | { type: "agent_settled"; aborted?: boolean };
-
 const ZERO_USAGE = {
   input: 0,
   output: 0,
@@ -70,7 +66,7 @@ export interface PiAgentSessionHarness {
     shutdowns: number;
     disposals: number;
   };
-  emit(event: HarnessAgentSessionEvent): void;
+  emit(event: AgentSessionEvent): void;
   /** Explicitly settle the oldest default prompt Promise. */
   resolvePrompt(): void;
   emitUser(text: string): void;
@@ -117,12 +113,8 @@ export function createPiAgentSessionHarness(
   const pendingDefaultPrompts: Array<() => void> = [];
   let queuedPromptResolutions = 0;
 
-  const emit = (event: HarnessAgentSessionEvent) => {
-    const normalized =
-      event.type === "agent_settled"
-        ? { type: "agent_settled" as const, aborted: event.aborted ?? false }
-        : event;
-    for (const listener of [...listeners]) listener(normalized);
+  const emit = (event: AgentSessionEvent) => {
+    for (const listener of [...listeners]) listener(event);
   };
 
   const makeAssistantMessage = (

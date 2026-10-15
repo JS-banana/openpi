@@ -36,6 +36,8 @@ function context(expanded = false, isError = false, showImages = false) {
     toolCallId: "code-1",
     invalidate() {},
     lastComponent: undefined,
+    durationMs: undefined,
+    outputPad: 0,
     state: {},
     cwd: "/workspace",
     executionStarted: true,
@@ -44,8 +46,6 @@ function context(expanded = false, isError = false, showImages = false) {
     expanded,
     showImages,
     isError,
-    durationMs: undefined,
-    outputPad: 1,
   };
 }
 const header = "Script completed\nWall time 2.3 seconds\nOutput:\n";

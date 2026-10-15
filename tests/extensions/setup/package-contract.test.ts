@@ -54,8 +54,8 @@ const PI_HOST_PACKAGES = [
 const HOST_PACKAGES = [...PI_HOST_PACKAGES, "typebox"] as const;
 
 const PI_MINIMUM_VERSION =
-  /^\^(\d+\.\d+\.\d+)$/.exec(
-    manifest.devDependencies?.[PI_HOST_PACKAGES[0]] ?? "",
+  /^>=(\d+\.\d+\.\d+)$/.exec(
+    manifest.peerDependencies?.[PI_HOST_PACKAGES[0]] ?? "",
   )?.[1] ?? "";
 
 test("Pi host packages stay peers while local checks keep development copies", () => {
@@ -103,7 +103,6 @@ test("Pi package ranges, docs, and Bun lock share one support minimum", () => {
     assert.ok(peerMatch, `bun.lock peerDependencies is missing ${packageName}`);
     assert.equal(manifest.devDependencies?.[packageName], devMatch[1]);
     assert.equal(manifest.peerDependencies?.[packageName], peerMatch[1]);
-    assert.equal(devMatch[1], `^${minimumVersion}`);
     assert.equal(peerMatch[1], `>=${minimumVersion}`);
 
     const resolvedMatch = bunLock.match(
@@ -157,6 +156,19 @@ test("experimental Pi server stays outside OpenPI runtime dependencies", () => {
 test("pi-intercom stays an explicit opt-in instead of a bundled dependency", () => {
   assert.equal(manifest.dependencies?.["pi-intercom"], undefined);
   assert.equal(manifest.devDependencies?.["pi-intercom"], undefined);
+});
+
+test("web search remains an optional native Pi package without a bundled tool group", () => {
+  assert.equal(manifest.dependencies?.["pi-web-access"], undefined);
+  assert.equal(manifest.devDependencies?.["pi-web-access"], undefined);
+  const surface = readFileSync(
+    new URL("../../../extensions/shared/tool-surface.ts", import.meta.url),
+    "utf8",
+  );
+  assert.doesNotMatch(
+    surface,
+    /web_search|fetch_content|web_enable|source_check/u,
+  );
 });
 
 test("the public OpenPI package has complete gallery and registry metadata", () => {

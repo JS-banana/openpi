@@ -35,9 +35,9 @@ Proposed for maintainer adoption with [#719](https://github.com/openpi-dev/openp
 
 - Keep Pi packages host-owned peers. Preserve the current open-ended peer range;
   do not bundle a second Pi runtime or add an OpenPI runtime version-rejection gate.
-- Declare one common Pi minimum in the three peer and development ranges and in
-  README/SETUP. The package contract checks these declarations and the lock
-  importer. The resolved host packages must agree and cannot be below the minimum.
+- Declare one common Pi minimum in the three peer ranges and in README/SETUP.
+  Development ranges may advance independently above that floor. The package
+  contract checks the declarations and their matching lock importer. The resolved host packages must agree and cannot be below the minimum.
 - Keep frozen-lock checks on the existing Node versions. Add independent minimum
   and latest-stable Pi jobs on the minimum supported Node version. Read the minimum
   from the published peer declaration; resolve `pi-coding-agent@latest` once per
@@ -95,3 +95,8 @@ Pi-native. This is a compatibility policy, not a guarantee about future releases
 
 Append adopted range changes and their validation evidence here, or link a
 superseding Decision. Historical investigations retain their original boundaries.
+
+2026-10-15 integration note: this record remains **proposed**. The historical
+validation above belongs to its named source and hosts. Main `f98d6a47` uses
+development `^1.2.0` and peer minimum `>=0.99.1`; endpoint CI does not adopt
+this policy or equate development versions with the supported floor.
